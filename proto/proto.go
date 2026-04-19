@@ -20,6 +20,7 @@ const (
 	OpUnsub     Op = 0x03
 	OpCommit    Op = 0x04
 	OpQuit      Op = 0x05
+	OpHeartbeat Op = 0x06
 	OpOk        Op = 0x10
 	OpErr       Op = 0x11
 	OpMsg       Op = 0x20

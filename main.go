@@ -16,6 +16,8 @@ func main() {
 		"time-based retention: drop sealed segments older than this duration (0 disables)")
 	sweepEvery := flag.Duration("sweep-every", 30*time.Second,
 		"how often to run the time-retention sweep when -retain-for is set")
+	heartbeatTimeout := flag.Duration("heartbeat-timeout", 15*time.Second,
+		"group members without a heartbeat within this window get kicked (0 disables)")
 	flag.Parse()
 
 	broker, err := NewBroker(*dir, *partitions, *segSize, *retain)
@@ -27,6 +29,9 @@ func main() {
 	defer broker.Stop()
 
 	server := NewServer(broker)
+	server.SetHeartbeatTimeout(*heartbeatTimeout)
+	defer server.Stop()
+
 	if err := server.Listen(*addr); err != nil {
 		log.Fatal(err)
 	}

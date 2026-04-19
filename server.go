@@ -9,16 +9,40 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"minibroker/proto"
 )
 
 type Server struct {
 	broker *Broker
+
+	hbTimeout time.Duration
+
+	liveMu sync.Mutex
+	live   map[*connSub]struct{}
+
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 func NewServer(b *Broker) *Server {
-	return &Server{broker: b}
+	return &Server{
+		broker: b,
+		live:   make(map[*connSub]struct{}),
+		stopCh: make(chan struct{}),
+	}
+}
+
+// SetHeartbeatTimeout enables the eviction sweeper. Members that don't send
+// a heartbeat within `timeout` get their connection closed.
+func (s *Server) SetHeartbeatTimeout(timeout time.Duration) {
+	s.hbTimeout = timeout
+}
+
+func (s *Server) Stop() {
+	s.stopOnce.Do(func() { close(s.stopCh) })
 }
 
 func (s *Server) Listen(addr string) error {
@@ -27,6 +51,9 @@ func (s *Server) Listen(addr string) error {
 		return err
 	}
 	log.Printf("minibroker listening on %s", addr)
+	if s.hbTimeout > 0 {
+		go s.evictLoop()
+	}
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -37,14 +64,47 @@ func (s *Server) Listen(addr string) error {
 	}
 }
 
+func (s *Server) evictLoop() {
+	t := time.NewTicker(s.hbTimeout / 3)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			s.evictStale()
+		case <-s.stopCh:
+			return
+		}
+	}
+}
+
+func (s *Server) evictStale() {
+	cutoff := time.Now().Add(-s.hbTimeout).UnixNano()
+	s.liveMu.Lock()
+	var victims []*connSub
+	for sub := range s.live {
+		if sub.lastSeen.Load() < cutoff {
+			victims = append(victims, sub)
+		}
+	}
+	s.liveMu.Unlock()
+	for _, v := range victims {
+		log.Printf("evicting stale member: topic=%s group=%s", v.topic, v.group)
+		body := proto.NewBuilder().String("evicted: heartbeat timeout").Build()
+		_ = v.owner.writeFrame(proto.OpErr, body)
+		_ = v.owner.raw.Close()
+	}
+}
+
 // Per-connection subscription state. A single key "topic" maps to either an
 // ephemeral single-partition iterator, or to a group membership with one
 // iterator per currently-assigned partition.
 type connSub struct {
-	topic  string
-	group  string // empty if ephemeral
-	iters  map[int32]context.CancelFunc
-	member int64
+	topic    string
+	group    string // empty if ephemeral
+	iters    map[int32]context.CancelFunc
+	member   int64
+	owner    *conn
+	lastSeen atomic.Int64 // unix nanos of the last heartbeat
 }
 
 type conn struct {
@@ -79,6 +139,9 @@ func (s *Server) handle(raw net.Conn) {
 				cancel()
 			}
 			if sub.group != "" {
+				s.liveMu.Lock()
+				delete(s.live, sub)
+				s.liveMu.Unlock()
 				if t, err := s.broker.Topic(sub.topic); err == nil {
 					t.Leave(sub.group, sub.member)
 				}
@@ -103,6 +166,8 @@ func (s *Server) handle(raw net.Conn) {
 			s.handleUnsub(c, body, subs, &subsMu)
 		case proto.OpCommit:
 			s.handleCommit(c, body)
+		case proto.OpHeartbeat:
+			s.handleHeartbeat(c, body, subs, &subsMu)
 		case proto.OpQuit:
 			_ = c.writeFrame(proto.OpOk, nil)
 			return
@@ -219,7 +284,9 @@ func (s *Server) handleSub(c *conn, body []byte, subs map[string]*connSub, subsM
 			topic: topic,
 			group: group,
 			iters: make(map[int32]context.CancelFunc),
+			owner: c,
 		}
+		sub.lastSeen.Store(time.Now().UnixNano())
 
 		// Join the group with a callback that receives rebalance notifications.
 		// The callback serializes its work through subsMu so it's safe vs.
@@ -271,6 +338,10 @@ func (s *Server) handleSub(c *conn, body []byte, subs map[string]*connSub, subsM
 		subsMu.Lock()
 		subs[topic] = sub
 		subsMu.Unlock()
+
+		s.liveMu.Lock()
+		s.live[sub] = struct{}{}
+		s.liveMu.Unlock()
 
 		// Perform the "initial" assignment work that the first Join-triggered
 		// onChange already did (it ran with initialSet=false) — but it did
@@ -332,6 +403,9 @@ func (s *Server) handleUnsub(c *conn, body []byte, subs map[string]*connSub, sub
 	subsMu.Unlock()
 
 	if sub.group != "" {
+		s.liveMu.Lock()
+		delete(s.live, sub)
+		s.liveMu.Unlock()
 		if t, err := s.broker.Topic(topic); err == nil {
 			t.Leave(sub.group, sub.member)
 		}
@@ -373,6 +447,29 @@ func (s *Server) handleCommit(c *conn, body []byte) {
 	}
 	reply := proto.NewBuilder().U64(offset64).Build()
 	_ = c.writeFrame(proto.OpOk, reply)
+}
+
+func (s *Server) handleHeartbeat(c *conn, body []byte, subs map[string]*connSub, subsMu *sync.Mutex) {
+	p := proto.NewParser(body)
+	topic, err := p.String()
+	if err != nil {
+		s.writeErr(c, "heartbeat: bad topic")
+		return
+	}
+	group, err := p.String()
+	if err != nil {
+		s.writeErr(c, "heartbeat: bad group")
+		return
+	}
+	subsMu.Lock()
+	sub, ok := subs[topic]
+	subsMu.Unlock()
+	if !ok || sub.group != group {
+		s.writeErr(c, "heartbeat: not-subscribed: "+topic)
+		return
+	}
+	sub.lastSeen.Store(time.Now().UnixNano())
+	_ = c.writeFrame(proto.OpOk, nil)
 }
 
 // Unused helper referenced via io package to avoid unused-import errors when

@@ -367,6 +367,34 @@ func (c *Client) Subscribe(topic string, partition int32, from int64, handler Ha
 	return nil
 }
 
+// heartbeatInterval is the period at which group members ping the server
+// so it knows they're alive. The default server-side timeout is 15s, so 5s
+// gives us three chances to hit the window even under load. Callers can
+// override it via SetHeartbeatInterval before SubscribeGroup.
+var heartbeatInterval = 5 * time.Second
+
+// SetHeartbeatInterval changes the period at which group members ping the
+// server. Has no effect on already-running heartbeat loops.
+func SetHeartbeatInterval(d time.Duration) { heartbeatInterval = d }
+
+func (c *Client) heartbeatLoop(topic, group string, cancel <-chan struct{}) {
+	t := time.NewTicker(heartbeatInterval)
+	defer t.Stop()
+	body := proto.NewBuilder().String(topic).String(group).Build()
+	for {
+		select {
+		case <-t.C:
+			// Failures are expected during a reconnect window — the
+			// supervisor re-sends SUB for us. Swallow errors here.
+			_, _ = c.request(proto.OpHeartbeat, body)
+		case <-cancel:
+			return
+		case <-c.closed:
+			return
+		}
+	}
+}
+
 // SubscribeGroup joins a consumer group on the topic. The server chooses the
 // partitions assigned to this member. If onRebal is non-nil, it's invoked
 // both on initial assignment and on every rebalance.
@@ -404,6 +432,7 @@ func (c *Client) SubscribeGroup(topic, group string, onRebal RebalanceHandler, h
 	if onRebal != nil {
 		onRebal(topic, group, parts)
 	}
+	go c.heartbeatLoop(topic, group, sub.cancel)
 	return nil
 }
 
