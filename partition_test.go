@@ -165,6 +165,57 @@ func TestPartitionSegmentRollingAndRetention(t *testing.T) {
 	}
 }
 
+func TestPartitionSweepOlderThan(t *testing.T) {
+	dir := t.TempDir()
+	// 3 records per segment; no count-based retention pressure.
+	p, err := openPartition(dir, 3, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 10 records -> segments at bases 0, 3, 6, 9.
+	for i := 0; i < 10; i++ {
+		if _, err := p.Append(nil, fmt.Appendf(nil, "m%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Backdate the three sealed segments so they look old on disk.
+	old := time.Now().Add(-10 * time.Minute)
+	for _, base := range []int64{0, 3, 6} {
+		path := filepath.Join(dir, fmt.Sprintf("%020d.log", base))
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removed, err := p.SweepOlderThan(time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 3 {
+		t.Errorf("swept %d segments, want 3", removed)
+	}
+
+	// Only the active segment (base 9) should be left.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bases []int
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".log") {
+			continue
+		}
+		n, _ := strconv.Atoi(strings.TrimSuffix(name, ".log"))
+		bases = append(bases, n)
+	}
+	sort.Ints(bases)
+	if len(bases) != 1 || bases[0] != 9 {
+		t.Fatalf("remaining segments = %v, want [9]", bases)
+	}
+}
+
 func TestPartitionCRCRejectsCorruption(t *testing.T) {
 	dir := t.TempDir()
 	p, err := openPartition(dir, 1000, 100)
