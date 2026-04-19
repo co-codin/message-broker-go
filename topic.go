@@ -153,7 +153,11 @@ func (t *Topic) Commit(group string, partition int32, offset int64) error {
 	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(offset, 10)), 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	commitsTotal.Inc()
+	return nil
 }
 
 // Join adds a member to a group and triggers a rebalance. Returns the

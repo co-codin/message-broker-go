@@ -169,6 +169,7 @@ func (s *Server) handle(raw net.Conn) {
 					t.Leave(sub.group, sub.member)
 				}
 			}
+			subscribersActive.Dec()
 		}
 		subsMu.Unlock()
 		log.Printf("client disconnected: %s", raw.RemoteAddr())
@@ -297,6 +298,7 @@ func (s *Server) handleSub(c *conn, body []byte, subs map[string]*connSub, subsM
 		subsMu.Lock()
 		subs[topic] = sub
 		subsMu.Unlock()
+		subscribersActive.Inc()
 
 		reply := proto.NewBuilder().Partitions([]int32{pid}).Build()
 		_ = c.writeFrame(proto.OpOk, reply)
@@ -371,6 +373,7 @@ func (s *Server) handleSub(c *conn, body []byte, subs map[string]*connSub, subsM
 		s.liveMu.Lock()
 		s.live[sub] = struct{}{}
 		s.liveMu.Unlock()
+		subscribersActive.Inc()
 
 		// Perform the "initial" assignment work that the first Join-triggered
 		// onChange already did (it ran with initialSet=false) — but it did
@@ -439,6 +442,7 @@ func (s *Server) handleUnsub(c *conn, body []byte, subs map[string]*connSub, sub
 			t.Leave(sub.group, sub.member)
 		}
 	}
+	subscribersActive.Dec()
 
 	_ = c.writeFrame(proto.OpOk, nil)
 }

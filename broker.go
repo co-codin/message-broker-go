@@ -186,6 +186,9 @@ func (b *Broker) Publish(topicName string, key, payload []byte) (int32, int64, e
 		return 0, 0, err
 	}
 	offset, err := part.Append(key, payload)
+	if err == nil {
+		publishesTotal.Inc()
+	}
 	return pid, offset, err
 }
 

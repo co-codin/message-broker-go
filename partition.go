@@ -164,6 +164,7 @@ func (p *Partition) Append(key, payload []byte) (int64, error) {
 			p.segments = p.segments[1:]
 			_ = os.Remove(old.path)
 		}
+		segmentRolls.Inc()
 	}
 
 	close(p.notify)
@@ -296,6 +297,9 @@ func (p *Partition) Compact() (int, error) {
 	// Rebuild the in-memory segment list: one compacted + active.
 	p.segments = []segment{{base: newBase, path: newPath}, activeSeg}
 
+	if dropped > 0 {
+		compactionDropped.Add(float64(dropped))
+	}
 	return dropped, nil
 }
 

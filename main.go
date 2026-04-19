@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net"
@@ -37,6 +38,9 @@ func main() {
 	clusterBootstrap := flag.Bool("cluster-bootstrap", false,
 		"bootstrap a brand-new cluster from this node (exactly one node, first run only)")
 
+	metricsAddr := flag.String("metrics-addr", "",
+		"serve Prometheus metrics on /metrics at this address (empty = disabled)")
+
 	healthcheck := flag.Bool("healthcheck", false,
 		"dial the broker's -addr and exit 0 if reachable, 1 otherwise (for docker HEALTHCHECK)")
 
@@ -67,6 +71,15 @@ func main() {
 	server := NewServer(broker)
 	server.SetHeartbeatTimeout(*heartbeatTimeout)
 	defer server.Stop()
+
+	if *metricsAddr != "" {
+		srv := startMetricsServer(*metricsAddr)
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(ctx)
+		}()
+	}
 
 	if *clusterID != "" {
 		peers := strings.Split(*clusterPeers, ",")
