@@ -6,10 +6,12 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/hashicorp/raft"
+	raftboltdb "github.com/hashicorp/raft-boltdb/v2"
 
 	"minibroker/proto"
 )
@@ -57,8 +59,15 @@ func NewCluster(broker *Broker, cfg ClusterConfig) (*Cluster, error) {
 		return nil, fmt.Errorf("tcp transport: %w", err)
 	}
 
-	logs := raft.NewInmemStore()
-	stable := raft.NewInmemStore()
+	// Durable Raft log + stable state in BoltDB so a node restart can rejoin
+	// without losing its in-flight log entries or vote state.
+	boltPath := filepath.Join(cfg.DataDir, "raft.bolt")
+	boltStore, err := raftboltdb.NewBoltStore(boltPath)
+	if err != nil {
+		return nil, fmt.Errorf("bolt store: %w", err)
+	}
+	logs := raft.LogStore(boltStore)
+	stable := raft.StableStore(boltStore)
 	snaps, err := raft.NewFileSnapshotStore(cfg.DataDir, 2, os.Stderr)
 	if err != nil {
 		return nil, fmt.Errorf("snapshot store: %w", err)
