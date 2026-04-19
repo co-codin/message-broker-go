@@ -74,6 +74,56 @@ Flags:
 | `-segment-size`| `1000`  | records per segment before rolling             |
 | `-retain`      | `100`   | total segments kept per partition              |
 
+## Using the Go client
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+
+	"minibroker/client"
+)
+
+func main() {
+	c, err := client.Dial("localhost:4222")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer c.Close()
+
+	// Publish — nil key means round-robin across partitions.
+	partition, offset, err := c.Publish("events", nil, []byte("hello"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("wrote partition=%d offset=%d\n", partition, offset)
+
+	// Join a consumer group — the broker picks our partitions and sends
+	// us a REBALANCE whenever the assignment changes.
+	err = c.SubscribeGroup("events", "workers",
+		func(topic, group string, assignment []int32) {
+			fmt.Println("my partitions:", assignment)
+		},
+		func(topic string, pid int32, offset int64, payload []byte) {
+			fmt.Printf("[%s/%d@%d] %s\n", topic, pid, offset, payload)
+			// Commit next-offset-to-read (Kafka convention).
+			_ = c.Commit(topic, "workers", pid, offset+1)
+		})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	select {} // run until killed
+}
+```
+
+For a single-partition, ephemeral subscription (no group), use
+`c.Subscribe(topic, partition, fromOffset, handler)` — pass `fromOffset=-1`
+to start at the partition's current head, or `0` to replay from the
+beginning.
+
 ## Demos
 
 Each demo expects a broker listening on `localhost:4222`. Start one in a
