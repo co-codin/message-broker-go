@@ -5,8 +5,10 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -84,7 +86,23 @@ func main() {
 			*clusterID, *clusterAddr, peers, *clusterBootstrap)
 	}
 
-	if err := server.Listen(*addr); err != nil {
-		log.Fatal(err)
+	// Start the accept loop in a goroutine so we can react to signals.
+	listenErr := make(chan error, 1)
+	go func() {
+		listenErr <- server.Listen(*addr)
+	}()
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-listenErr:
+		if err != nil {
+			log.Fatal(err)
+		}
+	case s := <-sig:
+		log.Printf("received %s, shutting down...", s)
+		// Defers (broker.Stop, server.Stop, cluster.Shutdown) run when main
+		// returns; server.Stop closes the listener so Listen returns.
 	}
 }

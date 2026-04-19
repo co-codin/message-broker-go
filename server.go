@@ -24,6 +24,9 @@ type Server struct {
 	liveMu sync.Mutex
 	live   map[*connSub]struct{}
 
+	listenerMu sync.Mutex
+	listener   net.Listener
+
 	stopCh   chan struct{}
 	stopOnce sync.Once
 }
@@ -48,6 +51,12 @@ func (s *Server) SetHeartbeatTimeout(timeout time.Duration) {
 
 func (s *Server) Stop() {
 	s.stopOnce.Do(func() { close(s.stopCh) })
+	s.listenerMu.Lock()
+	ln := s.listener
+	s.listenerMu.Unlock()
+	if ln != nil {
+		_ = ln.Close()
+	}
 }
 
 func (s *Server) Listen(addr string) error {
@@ -55,6 +64,10 @@ func (s *Server) Listen(addr string) error {
 	if err != nil {
 		return err
 	}
+	s.listenerMu.Lock()
+	s.listener = ln
+	s.listenerMu.Unlock()
+
 	log.Printf("minibroker listening on %s", addr)
 	if s.hbTimeout > 0 {
 		go s.evictLoop()
@@ -62,6 +75,11 @@ func (s *Server) Listen(addr string) error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			select {
+			case <-s.stopCh:
+				return nil // normal shutdown
+			default:
+			}
 			log.Printf("accept error: %v", err)
 			continue
 		}
