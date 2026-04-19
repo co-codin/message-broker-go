@@ -4,6 +4,83 @@ A small, learning-oriented message broker in Go — inspired by NATS, Kafka,
 Redis Streams, and RabbitMQ — built to understand how such systems work
 under the hood. **Not production-ready**; it's a teaching toy.
 
+## Architecture
+
+### Single-node broker
+
+```mermaid
+flowchart TB
+    subgraph Clients["Clients"]
+        producer["Producer"]
+        worker1["Group member A"]
+        worker2["Group member B"]
+    end
+
+    subgraph Broker["minibroker"]
+        direction TB
+        server["server.go<br/>(TCP :4222)"]
+        metrics["metrics.go<br/>/metrics :9100"]
+
+        subgraph Topic["Topic: events"]
+            direction TB
+            subgraph Parts["Partitions"]
+                p0["partition 0"]
+                p1["partition 1"]
+                p2["partition 2"]
+                p3["partition 3"]
+            end
+            subgraph Groups["Consumer groups"]
+                g1["group: workers<br/>A=[0,2]  B=[1,3]"]
+            end
+        end
+
+        subgraph Disk["data/events/"]
+            direction LR
+            seg0["part-0/<br/>0000...0000.log<br/>0000...1000.log"]
+            seg1["part-1/..."]
+            seg2["part-2/..."]
+            seg3["part-3/..."]
+            off["offsets/workers/<br/>0.off  1.off  2.off  3.off"]
+        end
+    end
+
+    producer -- "PUB" --> server
+    worker1 -- "SUB group=workers" --> server
+    worker2 -- "SUB group=workers" --> server
+    server --> Topic
+    Parts --> Disk
+    Groups --> off
+    Broker -.-> metrics
+```
+
+### 3-node Raft cluster
+
+```mermaid
+flowchart LR
+    client["Client<br/>Dial(n1, n2, n3)"]
+
+    subgraph Cluster["Raft cluster"]
+        direction LR
+        n1[":4221<br/>n1 LEADER"]
+        n2[":4222<br/>n2 follower"]
+        n3[":4223<br/>n3 follower"]
+        n1 <-. "raft :8001" .-> n2
+        n1 <-. "raft :8001" .-> n3
+        n2 <-. "raft :8001" .-> n3
+    end
+
+    client -- "PUB (writes)" --> n1
+    client -- "SUB (reads)" --> n2
+    client -.->|"auto-redirect<br/>on not-leader"| n1
+    n1 -. "replicates via Raft" .-> n2
+    n1 -. "replicates via Raft" .-> n3
+```
+
+Writes go through the leader's Raft log; followers apply the committed
+entries to their own broker state (segment files, commit offsets). Reads
+are served from local state on whichever node the client connects to, so
+subscribers on a follower are eventually consistent.
+
 ## What it does
 
 - **Persistent, append-only log** per partition on disk, with **CRC32** on
@@ -99,6 +176,8 @@ Flags:
 | `-cluster-addr`       | ``      | this node's Raft RPC address, e.g. `:8001`                           |
 | `-cluster-peers`      | ``      | comma-separated peer list `id@addr`                                  |
 | `-cluster-bootstrap`  | `false` | true on exactly one node the first time the cluster is created       |
+| `-metrics-addr`       | ``      | serve Prometheus `/metrics` here (e.g. `:9100`); empty disables      |
+| `-healthcheck`        | `false` | internal: used by the Docker HEALTHCHECK to probe the broker port    |
 
 ### Running a 3-node cluster
 
@@ -129,6 +208,8 @@ finds the leader, publishes through it, and reads the replicated records
 back from a follower.
 
 ## Using the Go client
+
+See [CLIENT.md](CLIENT.md) for the full API reference. Quick example:
 
 ```go
 package main
