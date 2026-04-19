@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,7 +66,11 @@ func (s *subscription) run(topic string) {
 }
 
 type Client struct {
-	addr string
+	// Candidate broker addresses. The client cycles through them on
+	// "not leader" errors and reconnect attempts.
+	addrsMu sync.Mutex
+	addrs   []string
+	addrIdx int
 
 	cmdMu sync.Mutex // serializes request/response pairs
 
@@ -87,9 +92,16 @@ type replyFrame struct {
 	body []byte
 }
 
-func Dial(addr string) (*Client, error) {
+// Dial accepts one or more broker addresses. The client holds them as
+// candidates: on a "not leader" error from a write it rotates to the next
+// one and retries; on a connection drop the supervisor reconnects starting
+// from the current index. Single-address use is unchanged.
+func Dial(addrs ...string) (*Client, error) {
+	if len(addrs) == 0 {
+		return nil, errors.New("client: at least one address is required")
+	}
 	c := &Client{
-		addr:   addr,
+		addrs:  append([]string(nil), addrs...),
 		subs:   make(map[string]*subscription),
 		closed: make(chan struct{}),
 	}
@@ -100,21 +112,55 @@ func Dial(addr string) (*Client, error) {
 	return c, nil
 }
 
+// connect tries each candidate address starting from the current index and
+// stops at the first one that answers.
 func (c *Client) connect() error {
-	conn, err := net.Dial("tcp", c.addr)
-	if err != nil {
-		return err
+	c.addrsMu.Lock()
+	addrs := append([]string(nil), c.addrs...)
+	start := c.addrIdx
+	c.addrsMu.Unlock()
+
+	var lastErr error
+	for i := 0; i < len(addrs); i++ {
+		idx := (start + i) % len(addrs)
+		conn, err := net.Dial("tcp", addrs[idx])
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		c.addrsMu.Lock()
+		c.addrIdx = idx
+		c.addrsMu.Unlock()
+
+		c.connMu.Lock()
+		c.conn = conn
+		c.bw = bufio.NewWriter(conn)
+		c.reply = make(chan replyFrame, 1)
+		c.done = make(chan struct{})
+		doneCh := c.done
+		replyCh := c.reply
+		c.connMu.Unlock()
+		go c.readLoop(conn, doneCh, replyCh)
+		return nil
 	}
+	return lastErr
+}
+
+// rotateAddress advances to the next candidate and closes the current
+// connection so the supervisor reconnects to the new target.
+func (c *Client) rotateAddress() {
+	c.addrsMu.Lock()
+	if len(c.addrs) > 1 {
+		c.addrIdx = (c.addrIdx + 1) % len(c.addrs)
+	}
+	c.addrsMu.Unlock()
+
 	c.connMu.Lock()
-	c.conn = conn
-	c.bw = bufio.NewWriter(conn)
-	c.reply = make(chan replyFrame, 1)
-	c.done = make(chan struct{})
-	doneCh := c.done
-	replyCh := c.reply
+	conn := c.conn
 	c.connMu.Unlock()
-	go c.readLoop(conn, doneCh, replyCh)
-	return nil
+	if conn != nil {
+		_ = conn.Close()
+	}
 }
 
 func (c *Client) readLoop(conn net.Conn, done chan struct{}, reply chan replyFrame) {
@@ -319,20 +365,54 @@ func (c *Client) expectOk(r replyFrame) error {
 }
 
 // Publish routes the message to a partition using the given key (nil for
-// round-robin) and returns the assigned partition and offset.
+// round-robin) and returns the assigned partition and offset. If the
+// currently-connected broker is a Raft follower, the client transparently
+// rotates to the next configured address and retries.
 func (c *Client) Publish(topic string, key, payload []byte) (int32, int64, error) {
 	body := proto.NewBuilder().String(topic).Bytes(key).Bytes(payload).Build()
-	r, err := c.request(proto.OpPub, body)
+	r, err := c.requestWithRedirect(proto.OpPub, body)
 	if err != nil {
-		return 0, 0, err
-	}
-	if err := c.expectOk(r); err != nil {
 		return 0, 0, err
 	}
 	p := proto.NewParser(r.body)
 	pid, _ := p.U32()
 	off, _ := p.U64()
 	return int32(pid), int64(off), nil
+}
+
+// requestWithRedirect wraps request with automatic redirect-on-"not leader".
+// On such an error the client rotates to the next configured address,
+// reconnects, and retries, up to len(addrs)+1 attempts total.
+func (c *Client) requestWithRedirect(op proto.Op, body []byte) (replyFrame, error) {
+	c.addrsMu.Lock()
+	maxAttempts := len(c.addrs) + 1
+	c.addrsMu.Unlock()
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		r, err := c.request(op, body)
+		if err != nil {
+			lastErr = err
+			// transient connection error; supervisor will reconnect
+			time.Sleep(150 * time.Millisecond)
+			continue
+		}
+		if r.op == proto.OpErr {
+			p := proto.NewParser(r.body)
+			msg, _ := p.String()
+			if strings.Contains(msg, "not leader") {
+				c.rotateAddress()
+				time.Sleep(250 * time.Millisecond) // give supervisor time to reconnect
+				lastErr = errors.New(msg)
+				continue
+			}
+			return replyFrame{}, errors.New(msg)
+		}
+		return r, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("request: exhausted retries")
+	}
+	return replyFrame{}, lastErr
 }
 
 // Subscribe attaches to a single partition of a topic. from=-1 starts at the
@@ -443,11 +523,8 @@ func (c *Client) Commit(topic, group string, partition int32, offset int64) erro
 		U32(uint32(partition)).
 		U64(uint64(offset)).
 		Build()
-	r, err := c.request(proto.OpCommit, body)
-	if err != nil {
-		return err
-	}
-	return c.expectOk(r)
+	_, err := c.requestWithRedirect(proto.OpCommit, body)
+	return err
 }
 
 func (c *Client) Unsubscribe(topic string) error {

@@ -1,8 +1,7 @@
 package main
 
-// Cluster demo: probes the 3 broker ports, finds the Raft leader (the one
-// that accepts a PUB), publishes 5 messages there, then reads them back from
-// a FOLLOWER to prove the data was replicated.
+// Cluster demo: hand the client all 3 node addresses and let it figure out
+// which one is the leader. The client auto-rotates on "not leader" errors.
 //
 // Usage: run examples/cluster/run-cluster.sh — it starts 3 nodes and
 // invokes `go run ./examples/cluster`.
@@ -10,7 +9,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -20,38 +18,15 @@ import (
 var nodes = []string{"localhost:4221", "localhost:4222", "localhost:4223"}
 
 func main() {
-	// 1. Find the leader: whichever node accepts a test publish.
-	var leaderIdx = -1
-	var leader *client.Client
-	for i, addr := range nodes {
-		c, err := client.Dial(addr)
-		if err != nil {
-			fmt.Printf("  %s: dial failed: %v\n", addr, err)
-			continue
-		}
-		_, _, err = c.Publish("probe", nil, []byte("hello"))
-		if err == nil {
-			leaderIdx = i
-			leader = c
-			fmt.Printf("  leader: %s\n", addr)
-			break
-		}
-		msg := err.Error()
-		if strings.Contains(msg, "not leader") {
-			fmt.Printf("  %s: follower (%s)\n", addr, msg)
-		} else {
-			fmt.Printf("  %s: other err: %v\n", addr, msg)
-		}
-		c.Close()
+	// Producer with all three addresses — writes auto-redirect to the leader.
+	producer, err := client.Dial(nodes...)
+	if err != nil {
+		log.Fatal(err)
 	}
-	if leader == nil {
-		log.Fatal("no leader found")
-	}
-	defer leader.Close()
+	defer producer.Close()
 
-	// 2. Publish 5 messages on the leader.
 	for i := 0; i < 5; i++ {
-		pid, off, err := leader.Publish("events", []byte("k"), fmt.Appendf(nil, "msg-%d", i))
+		pid, off, err := producer.Publish("events", []byte("k"), fmt.Appendf(nil, "msg-%d", i))
 		if err != nil {
 			log.Fatalf("publish #%d: %v", i, err)
 		}
@@ -61,26 +36,18 @@ func main() {
 	// Give replication a moment to land on followers.
 	time.Sleep(500 * time.Millisecond)
 
-	// 3. Subscribe from a follower (pick any other node). The follower
-	// should have received the same records via Raft replication.
-	var followerAddr string
-	for i, addr := range nodes {
-		if i != leaderIdx {
-			followerAddr = addr
-			break
-		}
-	}
-	follower, err := client.Dial(followerAddr)
+	// Consumer pinned to node 2 (could be a follower) — reads still work.
+	consumer, err := client.Dial(nodes[1])
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer follower.Close()
+	defer consumer.Close()
 
 	var got int32
 	done := make(chan struct{})
-	err = follower.Subscribe("events", 0, 0,
+	err = consumer.Subscribe("events", 0, 0,
 		func(topic string, pid int32, offset int64, key, payload []byte) {
-			fmt.Printf("  follower %s recv: [%s/%d@%d] %s\n", followerAddr, topic, pid, offset, payload)
+			fmt.Printf("  %s recv: [%s/%d@%d] %s\n", nodes[1], topic, pid, offset, payload)
 			if atomic.AddInt32(&got, 1) == 5 {
 				close(done)
 			}
@@ -90,8 +57,8 @@ func main() {
 	}
 	select {
 	case <-done:
-		fmt.Println("-- replication OK: all 5 messages visible on follower")
+		fmt.Println("-- replication OK: 5 messages visible on the other node")
 	case <-time.After(3 * time.Second):
-		log.Fatalf("timeout: follower only saw %d / 5", atomic.LoadInt32(&got))
+		log.Fatalf("timeout: only saw %d / 5", atomic.LoadInt32(&got))
 	}
 }
