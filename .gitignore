@@ -1,0 +1,11 @@
+# Compiled binary
+/minibroker
+
+# Runtime data directory (broker segment files, committed offsets)
+/data/
+
+# OS / editor clutter
+.DS_Store
+.vscode/
+.idea/
+*.swp
