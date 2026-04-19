@@ -85,4 +85,26 @@ docker-cluster-down:
 docker-clean:
 	docker compose down -v 2>/dev/null || true
 	docker compose -f docker-compose.cluster.yml down -v 2>/dev/null || true
+	docker compose -f docker-compose.bench.yml down -v 2>/dev/null || true
 	docker rmi minibroker:latest 2>/dev/null || true
+
+## --- Benchmarks ----------------------------------------------------------
+## Start all four brokers (minibroker, nats, rabbit, redis) in docker.
+bench-up:
+	docker compose -f docker-compose.bench.yml up -d --build
+
+bench-down:
+	docker compose -f docker-compose.bench.yml down -v
+
+## Run a full pass against every target (assumes bench-up already ran).
+bench:
+	@echo "--- 100 B payloads, n=20000 ---"
+	go run ./bench -target minibroker  -n 20000 -size 100
+	go run ./bench -target nats-js     -n 20000 -size 100
+	go run ./bench -target rabbit      -n 20000 -size 100
+	go run ./bench -target redis -addr localhost:6380 -n 20000 -size 100
+	@echo "--- 1 KiB payloads, n=10000 ---"
+	go run ./bench -target minibroker  -n 10000 -size 1024
+	go run ./bench -target nats-js     -n 10000 -size 1024
+	go run ./bench -target rabbit      -n 10000 -size 1024
+	go run ./bench -target redis -addr localhost:6380 -n 10000 -size 1024

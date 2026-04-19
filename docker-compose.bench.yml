@@ -1,0 +1,53 @@
+# Benchmark harness: runs all four brokers side by side so
+# `go run ./bench -target <name>` can hit any of them.
+#
+# Host-side ports:
+#   minibroker  :4222
+#   nats        :4223 (JetStream enabled)
+#   rabbitmq    :5672 (+ :15672 management UI)
+#   redis       :6379 (AOF=always for durable XADD)
+services:
+  minibroker:
+    build: .
+    image: minibroker:latest
+    container_name: bench-minibroker
+    command: ["-addr=:4222", "-dir=/data", "-partitions=1"]
+    ports:
+      - "4222:4222"
+    volumes:
+      - mb-data:/data
+
+  nats:
+    image: nats:2-alpine
+    container_name: bench-nats
+    # JetStream on a file store mounted to a named volume.
+    command: ["-js", "-sd", "/data"]
+    ports:
+      - "4223:4222"
+    volumes:
+      - nats-data:/data
+
+  rabbit:
+    image: rabbitmq:3-alpine
+    container_name: bench-rabbit
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbit-data:/var/lib/rabbitmq
+
+  redis:
+    image: redis:7-alpine
+    container_name: bench-redis
+    # AOF with fsync-on-every-write so XADD is properly durable.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "always"]
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis-data:/data
+
+volumes:
+  mb-data:
+  nats-data:
+  rabbit-data:
+  redis-data:

@@ -288,6 +288,73 @@ minibroker/
 └── examples/         five runnable demos
 ```
 
+## Benchmarks
+
+Head-to-head publish throughput against three well-known brokers. Every
+target runs the same loop: publish one message, wait for the broker to
+acknowledge it durably, publish the next. No pipelining, no batching —
+just a fair synchronous-per-message comparison.
+
+All brokers run in Docker on the same host (compose file:
+[`docker-compose.bench.yml`](docker-compose.bench.yml)) and the harness
+lives in [`bench/`](bench/). Reproduce with:
+
+```sh
+docker compose -f docker-compose.bench.yml up -d
+go run ./bench -target minibroker    -n 20000 -size 100
+go run ./bench -target nats-js       -n 20000 -size 100
+go run ./bench -target rabbit        -n 20000 -size 100
+go run ./bench -target redis -addr localhost:6380 -n 20000 -size 100
+docker compose -f docker-compose.bench.yml down -v
+```
+
+Results (single-producer, `host=Linux`, measured on the same run; your
+mileage will vary):
+
+**100-byte payloads, n=20,000:**
+
+| broker          | elapsed | msg/s | MiB/s  | notes                                  |
+|-----------------|--------:|------:|-------:|----------------------------------------|
+| nats-js         |   1.52s | 13,138 |  1.25  | JetStream file storage; batches fsyncs |
+| minibroker      |  28.36s |    705 |  0.07  | fsync on every append                  |
+| redis-streams   |  29.21s |    685 |  0.07  | AOF `appendfsync always`               |
+| rabbitmq        |  32.42s |    617 |  0.06  | durable queue + persistent + confirms  |
+
+**1 KiB payloads, n=10,000:**
+
+| broker          | elapsed | msg/s | MiB/s |
+|-----------------|--------:|------:|------:|
+| nats-js         |   0.91s | 11,012 | 10.75 |
+| minibroker      |  14.56s |    687 |  0.67 |
+| redis-streams   |  14.92s |    670 |  0.65 |
+| rabbitmq        |  16.39s |    610 |  0.60 |
+
+### How to read this
+
+- The three brokers that **fsync on every message** (minibroker,
+  redis-with-`appendfsync=always`, rabbitmq with durable+persistent+
+  confirms) all land in the same band — about 600–700 msg/s. Throughput
+  is dominated by disk-sync latency on this host, not any broker's code
+  path.
+- **NATS JetStream is ~18× faster** because it does *not* fsync every
+  append — writes hit the page cache and the OS flushes on its own
+  schedule (or at NATS's periodic checkpoint). This is a different
+  durability class: "survives a process crash" vs "survives a power
+  cut."
+- **Payload size barely matters** for the fsync-bound brokers — at 100 B
+  and 1 KiB throughput is within 5% of each other. For NATS it's also
+  flat because the bottleneck isn't disk throughput; it's the round
+  trips.
+
+### Where minibroker could close the gap
+
+- Add an async/batched publish path. Today every `Publish` waits for the
+  OK reply, so the N round-trips dominate. `PublishBatch(records)` with
+  one fsync at the end would trivially 10–20× throughput.
+- Group fsyncs across concurrent publishers (a.k.a. group commit).
+- Use `O_DIRECT` or large sequential writes to let the OS coalesce disk
+  I/O.
+
 ## Things this doesn't do (on purpose, for now)
 
 - No TLS, no auth, no ACLs.
