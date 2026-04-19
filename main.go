@@ -18,6 +18,8 @@ func main() {
 		"how often to run the time-retention sweep when -retain-for is set")
 	heartbeatTimeout := flag.Duration("heartbeat-timeout", 15*time.Second,
 		"group members without a heartbeat within this window get kicked (0 disables)")
+	compactEvery := flag.Duration("compact-every", 0,
+		"run log compaction at this interval (0 disables); keeps the latest record per key")
 	flag.Parse()
 
 	broker, err := NewBroker(*dir, *partitions, *segSize, *retain)
@@ -25,6 +27,7 @@ func main() {
 		log.Fatal(err)
 	}
 	broker.SetTimeRetention(*retainFor, *sweepEvery)
+	broker.SetCompaction(*compactEvery)
 	broker.Run()
 	defer broker.Stop()
 

@@ -239,16 +239,84 @@ func TestPartitionCRCRejectsCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Reopen and iterate — the CRC check should fire.
-	p2, err := openPartition(dir, 1000, 100)
+	// Reopen — the CRC check in loadSegments should fire because loading
+	// the active segment now scans records to find the max offset.
+	if _, err := openPartition(dir, 1000, 100); err == nil || !strings.Contains(err.Error(), "CRC mismatch") {
+		t.Fatalf("openPartition after corruption: got %v, want CRC mismatch", err)
+	}
+}
+
+func TestPartitionCompaction(t *testing.T) {
+	dir := t.TempDir()
+	// Roll every 3 records so after 8 appends we have segments at bases 0, 3, 6.
+	p, err := openPartition(dir, 3, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
+	appends := []struct {
+		key, val string
+	}{
+		{"a", "1"}, {"b", "1"}, {"a", "2"}, // segment 0 (offsets 0,1,2)
+		{"c", "1"}, {"a", "3"}, {"b", "2"}, // segment 3 (offsets 3,4,5)
+		{"d", "1"}, {"a", "4"}, // segment 6 (offsets 6,7 — still active)
+	}
+	for _, a := range appends {
+		if _, err := p.Append([]byte(a.key), []byte(a.val)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dropped, err := p.Compact()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sealed records at offsets 0..5. Among those, "a" is superseded by the
+	// active-segment record at offset 7 (a=4), so every "a" in sealed
+	// (offsets 0, 2, 4) is dropped. "b"=1 at offset 1 is superseded by
+	// "b"=2 at offset 5 -> offset 1 dropped. Total = 4 dropped.
+	if dropped != 4 {
+		t.Errorf("dropped %d records, want 4", dropped)
+	}
+
+	// Iterate from 0 should now see: 3 (c=1), 5 (b=2), 6 (d=1), 7 (a=4).
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	err = p2.Iterate(ctx, 0, func(int64, []byte, []byte) bool { return true })
-	if err == nil || !strings.Contains(err.Error(), "CRC mismatch") {
-		t.Fatalf("Iterate after corruption: got %v, want CRC mismatch", err)
+	type row struct {
+		offset   int64
+		key, val string
+	}
+	var got []row
+	done := make(chan struct{})
+	go func() {
+		_ = p.Iterate(ctx, 0, func(off int64, k, v []byte) bool {
+			got = append(got, row{off, string(k), string(v)})
+			if len(got) == 4 {
+				cancel()
+				return false
+			}
+			return true
+		})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("iterate timed out")
+	}
+
+	want := []row{
+		{3, "c", "1"},
+		{5, "b", "2"},
+		{6, "d", "1"},
+		{7, "a", "4"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("iterate got %d records, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("got[%d]=%+v, want %+v", i, got[i], want[i])
+		}
 	}
 }
 
