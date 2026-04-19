@@ -1,7 +1,7 @@
 BINARY := minibroker
 
-.PHONY: all build run run-partitions run-segments fmt tidy vet clean \
-        demo demo-reconnect demo-segments demo-groups demo-partitions
+.PHONY: all build run run-partitions run-segments run-heartbeat fmt tidy vet clean test \
+        demo demo-reconnect demo-segments demo-groups demo-partitions demo-heartbeat demo-cluster
 
 all: build
 
@@ -20,6 +20,10 @@ run-partitions: build
 run-segments: build
 	./$(BINARY) -partitions 1 -segment-size 5 -retain 2
 
+## run broker with a short heartbeat timeout for the heartbeat demo
+run-heartbeat: build
+	./$(BINARY) -heartbeat-timeout 2s
+
 demo:
 	go run ./examples/demo
 
@@ -35,6 +39,15 @@ demo-groups:
 demo-partitions:
 	go run ./examples/partitions
 
+demo-heartbeat:
+	go run ./examples/heartbeat
+
+demo-cluster: build
+	./examples/cluster/run-cluster.sh
+
+test:
+	go test ./...
+
 fmt:
 	gofmt -w .
 
@@ -46,4 +59,4 @@ tidy:
 
 clean:
 	rm -f $(BINARY)
-	rm -rf data
+	rm -rf data data-n1 data-n2 data-n3

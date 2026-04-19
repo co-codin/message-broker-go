@@ -3,6 +3,9 @@
 
 # Runtime data directory (broker segment files, committed offsets)
 /data/
+/data-n1/
+/data-n2/
+/data-n3/
 
 # OS / editor clutter
 .DS_Store

@@ -16,7 +16,8 @@ import (
 )
 
 type Server struct {
-	broker *Broker
+	broker  *Broker
+	cluster *Cluster // optional; when non-nil writes go through Raft
 
 	hbTimeout time.Duration
 
@@ -34,6 +35,10 @@ func NewServer(b *Broker) *Server {
 		stopCh: make(chan struct{}),
 	}
 }
+
+// AttachCluster enables replicated writes. All PUB and COMMIT operations
+// are routed through Raft. Must be called before Listen.
+func (s *Server) AttachCluster(c *Cluster) { s.cluster = c }
 
 // SetHeartbeatTimeout enables the eviction sweeper. Members that don't send
 // a heartbeat within `timeout` get their connection closed.
@@ -199,7 +204,13 @@ func (s *Server) handlePub(c *conn, body []byte) {
 		s.writeErr(c, "pub: bad payload")
 		return
 	}
-	pid, offset, err := s.broker.Publish(topic, key, payload)
+	var pid int32
+	var offset int64
+	if s.cluster != nil {
+		pid, offset, err = s.cluster.Publish(topic, key, payload)
+	} else {
+		pid, offset, err = s.broker.Publish(topic, key, payload)
+	}
 	if err != nil {
 		s.writeErr(c, err.Error())
 		return
@@ -436,14 +447,21 @@ func (s *Server) handleCommit(c *conn, body []byte) {
 		s.writeErr(c, "commit: bad offset")
 		return
 	}
-	t, err := s.broker.Topic(topic)
-	if err != nil {
-		s.writeErr(c, err.Error())
-		return
-	}
-	if err := t.Commit(group, int32(pid32), int64(offset64)); err != nil {
-		s.writeErr(c, err.Error())
-		return
+	if s.cluster != nil {
+		if err := s.cluster.CommitGroup(topic, group, int32(pid32), int64(offset64)); err != nil {
+			s.writeErr(c, err.Error())
+			return
+		}
+	} else {
+		t, err := s.broker.Topic(topic)
+		if err != nil {
+			s.writeErr(c, err.Error())
+			return
+		}
+		if err := t.Commit(group, int32(pid32), int64(offset64)); err != nil {
+			s.writeErr(c, err.Error())
+			return
+		}
 	}
 	reply := proto.NewBuilder().U64(offset64).Build()
 	_ = c.writeFrame(proto.OpOk, reply)
