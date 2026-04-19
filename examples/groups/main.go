@@ -38,7 +38,7 @@ func main() {
 	var aMu sync.Mutex
 	var aReceived []int64
 	err = sessionA.SubscribeGroup("jobs", "worker", nil,
-		func(topic string, pid int32, offset int64, payload []byte) {
+		func(topic string, pid int32, offset int64, key, payload []byte) {
 			aMu.Lock()
 			aReceived = append(aReceived, offset)
 			aMu.Unlock()
@@ -81,7 +81,7 @@ func main() {
 	var bMu sync.Mutex
 	var bReceived []int64
 	err = sessionB.SubscribeGroup("jobs", "worker", nil,
-		func(topic string, pid int32, offset int64, payload []byte) {
+		func(topic string, pid int32, offset int64, key, payload []byte) {
 			bMu.Lock()
 			bReceived = append(bReceived, offset)
 			bMu.Unlock()

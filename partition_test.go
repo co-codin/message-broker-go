@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,7 +19,7 @@ func TestPartitionAppendAssignsSequentialOffsets(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 5; i++ {
-		off, err := p.Append(fmt.Appendf(nil, "msg-%d", i))
+		off, err := p.Append(nil, fmt.Appendf(nil, "msg-%d", i))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -37,7 +38,7 @@ func TestPartitionIterateReadsAll(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 5; i++ {
-		if _, err := p.Append(fmt.Appendf(nil, "msg-%d", i)); err != nil {
+		if _, err := p.Append(nil, fmt.Appendf(nil, "msg-%d", i)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -51,7 +52,7 @@ func TestPartitionIterateReadsAll(t *testing.T) {
 	)
 	done := make(chan struct{})
 	go func() {
-		_ = p.Iterate(ctx, 0, func(offset int64, payload []byte) bool {
+		_ = p.Iterate(ctx, 0, func(offset int64, _, payload []byte) bool {
 			mu.Lock()
 			got = append(got, string(payload))
 			n := len(got)
@@ -90,7 +91,7 @@ func TestPartitionReplayAfterReopen(t *testing.T) {
 	}
 	want := []string{"alpha", "beta", "gamma"}
 	for _, s := range want {
-		if _, err := p.Append([]byte(s)); err != nil {
+		if _, err := p.Append(nil, []byte(s)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -109,7 +110,7 @@ func TestPartitionReplayAfterReopen(t *testing.T) {
 	var got []string
 	done := make(chan struct{})
 	go func() {
-		_ = p2.Iterate(ctx, 0, func(_ int64, payload []byte) bool {
+		_ = p2.Iterate(ctx, 0, func(_ int64, _, payload []byte) bool {
 			got = append(got, string(payload))
 			if len(got) == len(want) {
 				cancel()
@@ -135,7 +136,7 @@ func TestPartitionSegmentRollingAndRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 10; i++ {
-		if _, err := p.Append(fmt.Appendf(nil, "m%d", i)); err != nil {
+		if _, err := p.Append(nil, fmt.Appendf(nil, "m%d", i)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -164,6 +165,42 @@ func TestPartitionSegmentRollingAndRetention(t *testing.T) {
 	}
 }
 
+func TestPartitionCRCRejectsCorruption(t *testing.T) {
+	dir := t.TempDir()
+	p, err := openPartition(dir, 1000, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Append([]byte("k"), []byte("original value")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Corrupt one byte in the payload region of the segment file.
+	segFile := filepath.Join(dir, "00000000000000000000.log")
+	data, err := os.ReadFile(segFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Layout: [u32 body_len][u16 key_len][k][u32 payload_len][payload][u32 crc]
+	// Flip a bit in the payload — guaranteed to change the CRC check.
+	data[len(data)-6] ^= 0xff
+	if err := os.WriteFile(segFile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen and iterate — the CRC check should fire.
+	p2, err := openPartition(dir, 1000, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err = p2.Iterate(ctx, 0, func(int64, []byte, []byte) bool { return true })
+	if err == nil || !strings.Contains(err.Error(), "CRC mismatch") {
+		t.Fatalf("Iterate after corruption: got %v, want CRC mismatch", err)
+	}
+}
+
 func TestPartitionIterateOutOfRangeReturnsError(t *testing.T) {
 	dir := t.TempDir()
 	p, err := openPartition(dir, 3, 2)
@@ -171,7 +208,7 @@ func TestPartitionIterateOutOfRangeReturnsError(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 10; i++ {
-		if _, err := p.Append(fmt.Appendf(nil, "m%d", i)); err != nil {
+		if _, err := p.Append(nil, fmt.Appendf(nil, "m%d", i)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -179,7 +216,7 @@ func TestPartitionIterateOutOfRangeReturnsError(t *testing.T) {
 	// iterate from 0 should return an "out of range" error.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	err = p.Iterate(ctx, 0, func(int64, []byte) bool { return true })
+	err = p.Iterate(ctx, 0, func(int64, []byte, []byte) bool { return true })
 	if err == nil || !strings.Contains(err.Error(), "out of range") {
 		t.Fatalf("Iterate from 0: got %v, want out-of-range", err)
 	}

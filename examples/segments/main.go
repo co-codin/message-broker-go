@@ -35,7 +35,7 @@ func main() {
 
 	var seen int32
 	done := make(chan struct{})
-	err = sub.Subscribe("logs", 0, 5, func(topic string, pid int32, offset int64, payload []byte) {
+	err = sub.Subscribe("logs", 0, 5, func(topic string, pid int32, offset int64, key, payload []byte) {
 		fmt.Printf("  recv: [%s/%d@%d] %s\n", topic, pid, offset, payload)
 		if atomic.AddInt32(&seen, 1) == 8 {
 			close(done)

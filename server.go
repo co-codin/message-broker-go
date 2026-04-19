@@ -293,11 +293,12 @@ func resolveGroupStart(t *Topic, pid int32, group string) int64 {
 }
 
 func (s *Server) streamPartition(c *conn, ctx context.Context, topic string, pid int32, from int64) {
-	err := s.broker.Iterate(ctx, topic, pid, from, func(offset int64, payload []byte) bool {
+	err := s.broker.Iterate(ctx, topic, pid, from, func(offset int64, key, payload []byte) bool {
 		body := proto.NewBuilder().
 			String(topic).
 			U32(uint32(pid)).
 			U64(uint64(offset)).
+			Bytes(key).
 			Bytes(payload).
 			Build()
 		if werr := c.writeFrame(proto.OpMsg, body); werr != nil {

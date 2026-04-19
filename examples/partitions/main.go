@@ -61,7 +61,7 @@ func main() {
 			fmt.Printf("  rebalance A: %v\n", assign)
 			assignA <- assign
 		},
-		func(topic string, pid int32, offset int64, payload []byte) {
+		func(topic string, pid int32, offset int64, key, payload []byte) {
 			record("A", seenA, payload)
 			if err := workerA.Commit(topic, "pipeline", pid, offset+1); err != nil {
 				log.Printf("A commit err: %v", err)
@@ -88,7 +88,7 @@ func main() {
 			fmt.Printf("  rebalance B: %v\n", assign)
 			assignB <- assign
 		},
-		func(topic string, pid int32, offset int64, payload []byte) {
+		func(topic string, pid int32, offset int64, key, payload []byte) {
 			record("B", seenB, payload)
 			if err := workerB.Commit(topic, "pipeline", pid, offset+1); err != nil {
 				log.Printf("B commit err: %v", err)

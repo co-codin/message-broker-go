@@ -73,7 +73,7 @@ func (b *Broker) Publish(topicName string, key, payload []byte) (int32, int64, e
 	if err != nil {
 		return 0, 0, err
 	}
-	offset, err := part.Append(payload)
+	offset, err := part.Append(key, payload)
 	return pid, offset, err
 }
 
@@ -90,7 +90,7 @@ func (b *Broker) PartitionHead(topicName string, partition int32) (int64, error)
 	return p.Head(), nil
 }
 
-func (b *Broker) Iterate(ctx context.Context, topicName string, partition int32, from int64, fn func(offset int64, payload []byte) bool) error {
+func (b *Broker) Iterate(ctx context.Context, topicName string, partition int32, from int64, fn func(offset int64, key, payload []byte) bool) error {
 	t, err := b.Topic(topicName)
 	if err != nil {
 		return err

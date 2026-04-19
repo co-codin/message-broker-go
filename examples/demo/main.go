@@ -38,7 +38,7 @@ func main() {
 
 	var count int32
 	done := make(chan struct{})
-	err = sub.Subscribe("news", partition, 0, func(topic string, pid int32, offset int64, payload []byte) {
+	err = sub.Subscribe("news", partition, 0, func(topic string, pid int32, offset int64, key, payload []byte) {
 		fmt.Printf("recv: [%s/%d@%d] %s\n", topic, pid, offset, payload)
 		if atomic.AddInt32(&count, 1) == 3 {
 			close(done)

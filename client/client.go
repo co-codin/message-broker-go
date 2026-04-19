@@ -11,8 +11,10 @@ import (
 	"minibroker/proto"
 )
 
-// Handler receives a single message.
-type Handler func(topic string, partition int32, offset int64, payload []byte)
+// Handler receives a single message. key is nil when the publisher didn't
+// set one (i.e. round-robin publish); payload may be nil for tombstones
+// (once compaction is enabled).
+type Handler func(topic string, partition int32, offset int64, key, payload []byte)
 
 // RebalanceHandler is invoked when a group's partition assignment changes.
 // It's optional — pass nil if you don't need it.
@@ -21,6 +23,7 @@ type RebalanceHandler func(topic, group string, assignment []int32)
 type msgEvent struct {
 	partition int32
 	offset    int64
+	key       []byte
 	payload   []byte
 }
 
@@ -54,7 +57,7 @@ func (s *subscription) run(topic string) {
 	for {
 		select {
 		case evt := <-s.ch:
-			s.handler(topic, evt.partition, evt.offset, evt.payload)
+			s.handler(topic, evt.partition, evt.offset, evt.key, evt.payload)
 		case <-s.cancel:
 			return
 		}
@@ -151,6 +154,10 @@ func (c *Client) dispatchMsg(body []byte) {
 	if err != nil {
 		return
 	}
+	key, err := p.Bytes()
+	if err != nil {
+		return
+	}
 	payload, err := p.Bytes()
 	if err != nil {
 		return
@@ -164,7 +171,7 @@ func (c *Client) dispatchMsg(body []byte) {
 	c.subMu.Unlock()
 	if sub != nil {
 		select {
-		case sub.ch <- msgEvent{partition: pid, offset: int64(off), payload: payload}:
+		case sub.ch <- msgEvent{partition: pid, offset: int64(off), key: key, payload: payload}:
 		case <-sub.cancel:
 		}
 	}
