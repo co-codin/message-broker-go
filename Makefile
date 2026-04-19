@@ -1,7 +1,8 @@
 BINARY := minibroker
 
 .PHONY: all build run run-partitions run-segments run-heartbeat fmt tidy vet clean test \
-        demo demo-reconnect demo-segments demo-groups demo-partitions demo-heartbeat demo-cluster
+        demo demo-reconnect demo-segments demo-groups demo-partitions demo-heartbeat demo-cluster \
+        docker-build docker-up docker-down docker-cluster-up docker-cluster-down docker-clean
 
 all: build
 
@@ -60,3 +61,28 @@ tidy:
 clean:
 	rm -f $(BINARY)
 	rm -rf data data-n1 data-n2 data-n3
+
+## --- Docker --------------------------------------------------------------
+## Build the local image.
+docker-build:
+	docker build -t minibroker:latest .
+
+## Single-node broker in docker-compose.
+docker-up:
+	docker compose up -d --build
+
+docker-down:
+	docker compose down
+
+## Replicated 3-node cluster (docker-compose.cluster.yml).
+docker-cluster-up:
+	docker compose -f docker-compose.cluster.yml up -d --build
+
+docker-cluster-down:
+	docker compose -f docker-compose.cluster.yml down -v
+
+## Remove local image + compose volumes.
+docker-clean:
+	docker compose down -v 2>/dev/null || true
+	docker compose -f docker-compose.cluster.yml down -v 2>/dev/null || true
+	docker rmi minibroker:latest 2>/dev/null || true

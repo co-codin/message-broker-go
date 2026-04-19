@@ -110,6 +110,24 @@ This starts three `minibroker` processes on ports 4221/4222/4223 (broker) and
 8001/8002/8003 (Raft), waits for an election, publishes through the leader,
 and confirms a follower received the replicated messages.
 
+## Docker
+
+Multi-stage Dockerfile (distroless runtime, ~12 MB final image) and two
+compose files — one for single-node, one for the 3-node cluster.
+
+| target                    | what it does                                                  |
+|---------------------------|---------------------------------------------------------------|
+| `make docker-build`       | build the local `minibroker:latest` image                     |
+| `make docker-up`          | single broker on `localhost:4222`, named volume `broker-data` |
+| `make docker-down`        | stop the single broker (keeps the data volume)                |
+| `make docker-cluster-up`  | 3-node Raft cluster, brokers on :4221 / :4222 / :4223         |
+| `make docker-cluster-down`| stop the cluster AND wipe volumes (fresh bootstrap next time) |
+| `make docker-clean`       | remove both compose stacks + the image                        |
+
+Once the cluster is up, `go run ./examples/cluster` probes the three ports,
+finds the leader, publishes through it, and reads the replicated records
+back from a follower.
+
 ## Using the Go client
 
 ```go

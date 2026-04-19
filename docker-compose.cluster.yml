@@ -1,0 +1,77 @@
+# 3-node minibroker cluster with Raft replication.
+#
+#   docker compose -f docker-compose.cluster.yml up --build
+#
+# Ports exposed to the host:
+#   n1 broker: 4221   n2 broker: 4222   n3 broker: 4223
+# Raft RPC ports (n*:8001) stay on the internal Docker network.
+#
+# Only n1 has -cluster-bootstrap on first start. If you want to rebootstrap
+# from scratch, run `docker compose -f docker-compose.cluster.yml down -v`
+# first to delete the named volumes (and therefore the Raft snapshots).
+services:
+  n1:
+    build: .
+    image: minibroker:latest
+    container_name: mb-n1
+    command:
+      - "-addr=:4222"
+      - "-dir=/data"
+      - "-partitions=1"
+      - "-cluster-id=n1"
+      - "-cluster-addr=n1:8001"
+      - "-cluster-peers=n1@n1:8001,n2@n2:8001,n3@n3:8001"
+      - "-cluster-bootstrap"
+    ports:
+      - "4221:4222"
+    volumes:
+      - n1-data:/data
+    networks: [cluster]
+    restart: unless-stopped
+
+  n2:
+    build: .
+    image: minibroker:latest
+    container_name: mb-n2
+    command:
+      - "-addr=:4222"
+      - "-dir=/data"
+      - "-partitions=1"
+      - "-cluster-id=n2"
+      - "-cluster-addr=n2:8001"
+      - "-cluster-peers=n1@n1:8001,n2@n2:8001,n3@n3:8001"
+    ports:
+      - "4222:4222"
+    volumes:
+      - n2-data:/data
+    networks: [cluster]
+    depends_on: [n1]
+    restart: unless-stopped
+
+  n3:
+    build: .
+    image: minibroker:latest
+    container_name: mb-n3
+    command:
+      - "-addr=:4222"
+      - "-dir=/data"
+      - "-partitions=1"
+      - "-cluster-id=n3"
+      - "-cluster-addr=n3:8001"
+      - "-cluster-peers=n1@n1:8001,n2@n2:8001,n3@n3:8001"
+    ports:
+      - "4223:4222"
+    volumes:
+      - n3-data:/data
+    networks: [cluster]
+    depends_on: [n1]
+    restart: unless-stopped
+
+volumes:
+  n1-data:
+  n2-data:
+  n3-data:
+
+networks:
+  cluster:
+    driver: bridge

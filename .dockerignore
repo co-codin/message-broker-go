@@ -1,0 +1,18 @@
+# Compiled artifacts
+/minibroker
+/data
+/data-n1
+/data-n2
+/data-n3
+
+# Git / editor / OS
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+*.swp
+
+# Documentation / local notes
+README.md
+*.md

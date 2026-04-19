@@ -1,0 +1,23 @@
+# Single-node minibroker for quick local use.
+#
+#   docker compose up --build      # starts the broker on :4222
+#   docker compose down            # stops it; add -v to wipe the data volume
+#
+# For the replicated 3-node demo, use docker-compose.cluster.yml.
+services:
+  broker:
+    build: .
+    image: minibroker:latest
+    container_name: minibroker
+    command:
+      - "-addr=:4222"
+      - "-dir=/data"
+      - "-partitions=4"
+    ports:
+      - "4222:4222"
+    volumes:
+      - broker-data:/data
+    restart: unless-stopped
+
+volumes:
+  broker-data:
