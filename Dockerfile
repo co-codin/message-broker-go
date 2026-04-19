@@ -31,5 +31,7 @@ EXPOSE 8001
 VOLUME ["/data"]
 
 USER nonroot:nonroot
+HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/minibroker", "-healthcheck"]
 ENTRYPOINT ["/minibroker"]
 CMD ["-dir", "/data"]

@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 	"log"
+	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -33,7 +35,23 @@ func main() {
 	clusterBootstrap := flag.Bool("cluster-bootstrap", false,
 		"bootstrap a brand-new cluster from this node (exactly one node, first run only)")
 
+	healthcheck := flag.Bool("healthcheck", false,
+		"dial the broker's -addr and exit 0 if reachable, 1 otherwise (for docker HEALTHCHECK)")
+
 	flag.Parse()
+
+	if *healthcheck {
+		a := *addr
+		if strings.HasPrefix(a, ":") {
+			a = "127.0.0.1" + a
+		}
+		conn, err := net.DialTimeout("tcp", a, 2*time.Second)
+		if err != nil {
+			os.Exit(1)
+		}
+		conn.Close()
+		os.Exit(0)
+	}
 
 	broker, err := NewBroker(*dir, *partitions, *segSize, *retain)
 	if err != nil {
